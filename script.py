@@ -3,6 +3,7 @@ import re
 import shutil
 import requests
 import subprocess
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -12,12 +13,16 @@ from playwright.async_api import async_playwright
 # === Settings ===
 SECTIONS = {
     "Today's Articles": [
-        "https://www.newyorker.com/latest",
+        "https://www.newyorker.com/latest", "https://www.newyorker.com/latest?page=2",  "https://www.newyorker.com/latest?page=3",  "https://www.newyorker.com/latest?page=4"
     ]
 }
+
 ROOT_DIR = Path("/Users/juliapappp/Calibre Library/the-new-yorker")
 CALIBRE_LIBRARY_PATH = Path("/Users/juliapappp/Calibre Library")
+DATA_FILE = ROOT_DIR / "article_data.json"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+ROOT_DIR.mkdir(parents=True, exist_ok=True)
 
 today_articles = []
 week_articles = []
@@ -135,6 +140,7 @@ async def scroll_to_bottom(page):
 
 
 async def download_article(playwright, url):
+
     browser = await playwright.chromium.launch(headless=True)
     page = await browser.new_page()
     await page.goto(url)
@@ -178,7 +184,7 @@ async def download_article(playwright, url):
             "content": str(article_tag),
             "image_data": image_data,
             "url": url,
-            "date": pub_date.date()
+            "date": pub_date.date().isoformat()
         }
 
         if pub_date.date() == datetime.today().date():
@@ -190,13 +196,65 @@ async def download_article(playwright, url):
         print(f"❌ Failed to save article: {url} - {e}")
 
 
+def load_articles():
+    if DATA_FILE.exists():
+        with open(DATA_FILE, 'r') as f:
+            return json.load(f).get("articles", [])
+    return []
+
+
+def save_articles(articles):
+    with open(DATA_FILE, 'w') as f:
+        json.dump({"articles": articles}, f, indent=2)
+
+
+def organize_articles(all_articles):
+    today = datetime.today().date()
+    yesterday = today - timedelta(days=1)
+    week_limit = today - timedelta(days=7)
+
+    updated_articles = []
+    todays_articles = []
+    weeks_articles = []
+
+    for article in all_articles:
+        art_date = datetime.fromisoformat(article["date"]).date()
+
+        # Purge anything older than 7 days
+        if art_date < week_limit:
+            continue
+
+        # Today
+        if art_date == today:
+            todays_articles.append(article)
+
+        # This week includes today and last 6 days
+        else:
+            weeks_articles.append(article)
+
+        updated_articles.append(article)
+
+    return updated_articles, todays_articles, weeks_articles
+
+
 async def main():
+    all_articles = load_articles()
     async with async_playwright() as playwright:
         links = await extract_article_links(playwright, SECTIONS["Today's Articles"])
+        existing_urls = {a["url"] for a in all_articles}
         for link in links:
-            await download_article(playwright, link)
+            if link not in existing_urls:
+                await download_article(playwright, link)
 
-    create_combined_epub(today_articles, week_articles, ROOT_DIR)
+    new_urls = {a["url"] for a in today_articles + week_articles}
+    all_articles += [a for a in today_articles +
+                     week_articles if a["url"] not in {a["url"] for a in all_articles}]
+
+    cleaned_articles, todays_articles_final, weeks_articles_final = organize_articles(
+        all_articles)
+    save_articles(cleaned_articles)
+    create_combined_epub(todays_articles_final, weeks_articles_final, ROOT_DIR)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
