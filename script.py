@@ -19,6 +19,9 @@ ROOT_DIR = Path("/Users/juliapappp/Calibre Library/the-new-yorker")
 CALIBRE_LIBRARY_PATH = Path("/Users/juliapappp/Calibre Library")
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
+today_articles = []
+week_articles = []
+
 
 def sanitize_filename(name):
     return re.sub(r'[^\w\-_\. ]', '_', name)
@@ -39,41 +42,41 @@ def import_to_calibre(epub_path):
         print(f"❌ Failed to import {epub_path.name} into Calibre: {e}")
 
 
-def create_epub(title, content, author, url, save_path, image_data=None):
+def create_combined_epub(today_articles, week_articles, save_path):
     book = epub.EpubBook()
-    book.set_identifier(url)
-    book.set_title(title)
+    book.set_identifier(f"newyorker-digest-{datetime.today().isoformat()}")
+    book.set_title("The New Yorker Digest")
     book.set_language('en')
-    book.add_author(author)
+    book.add_author("The New Yorker")
 
-    chapter = epub.EpubHtml(title=title, file_name='chap.xhtml', lang='en')
-    chapter.content = content
-    book.add_item(chapter)
+    spine = ['nav']
+    toc = []
 
-    if image_data:
-        for img_url, img_filename in image_data:
-            try:
-                response = requests.get(img_url, stream=True, timeout=10)
-                if response.status_code == 200:
-                    img_item = epub.EpubItem(
-                        uid=img_filename,
-                        file_name=img_filename,
-                        media_type=f'image/{img_filename.split(".")[-1]}',
-                        content=response.content
-                    )
-                    book.add_item(img_item)
-            except Exception as e:
-                print(f"⚠️ Failed to fetch image: {img_url} - {e}")
+    def add_section(articles, section_title):
+        section_items = []
+        for i, article in enumerate(articles, 1):
+            chap = epub.EpubHtml(
+                title=article['title'], file_name=f'{section_title.lower().replace(" ", "_")}_{i}.xhtml', lang='en')
+            chap.content = article['content']
+            book.add_item(chap)
+            spine.append(chap)
+            section_items.append(chap)
+        if section_items:
+            toc.append((epub.Section(section_title), section_items))
 
-    book.toc = (chapter,)
-    book.spine = ['nav', chapter]
+    add_section(today_articles, "Today's News")
+    add_section(week_articles, "This Week")
+
+    book.toc = toc
+    book.spine = spine
+
     book.add_item(epub.EpubNav())
     book.add_item(epub.EpubNcx())
 
-    filename = sanitize_filename(title) + ".epub"
+    filename = f"The New Yorker Digest - {datetime.today().strftime('%Y-%m-%d')}.epub"
     full_path = save_path / filename
     epub.write_epub(str(full_path), book)
-    print(f"✅ Saved: {filename}")
+    print(f"✅ Saved digest EPUB: {filename}")
     import_to_calibre(full_path)
 
 
@@ -82,18 +85,11 @@ def extract_clean_authors(author_tag):
         return "The New Yorker"
 
     text = author_tag.get_text().strip()
-
     text = text.replace('\u00A0', ' ')
 
     prefixes = [
-        r"Interview by",
-        r"Photographs by",
-        r"Reporting by",
-        r"Words by",
-        r"From",
-        r"With",
-        r"By",
-        r"and"
+        r"Interview by", r"Photographs by", r"Reporting by", r"Words by",
+        r"From", r"With", r"By", r"and"
     ]
     pattern = r"^(?:" + "|".join(prefixes) + r")\s+"
     cleaned = re.sub(pattern, "", text, flags=re.IGNORECASE)
@@ -129,7 +125,7 @@ async def extract_article_links(playwright, urls):
 
 async def scroll_to_bottom(page):
     prev_height = None
-    for _ in range(100):
+    for _ in range(200):
         current_height = await page.evaluate("document.body.scrollHeight")
         if prev_height == current_height:
             break
@@ -138,7 +134,7 @@ async def scroll_to_bottom(page):
         prev_height = current_height
 
 
-async def download_article(playwright, url, today_folder, week_folder):
+async def download_article(playwright, url):
     browser = await playwright.chromium.launch(headless=True)
     page = await browser.new_page()
     await page.goto(url)
@@ -155,7 +151,6 @@ async def download_article(playwright, url, today_folder, week_folder):
             print(f"⚠️ Article tag not found: {url}")
             return
 
-        # Extract metadata
         title_tag = article_tag.find("h1")
         title = title_tag.get_text(strip=True) if title_tag else "Untitled"
 
@@ -167,9 +162,7 @@ async def download_article(playwright, url, today_folder, week_folder):
 
         author_tag = soup.find("span", class_=re.compile("byline"))
         author = extract_clean_authors(author_tag)
-        print(author)
 
-        # Replace images and collect them for embedding
         image_data = []
         for i, img in enumerate(article_tag.find_all("img"), start=1):
             if img.has_attr("src"):
@@ -179,58 +172,31 @@ async def download_article(playwright, url, today_folder, week_folder):
                 image_data.append((img_url, img_filename))
                 img["src"] = img_filename
 
-        body_html = str(article_tag)
+        article_data = {
+            "title": title,
+            "author": author,
+            "content": str(article_tag),
+            "image_data": image_data,
+            "url": url,
+            "date": pub_date.date()
+        }
 
-        # Determine destination folder
         if pub_date.date() == datetime.today().date():
-            create_epub(title, body_html, author,
-                        url, today_folder, image_data)
+            today_articles.append(article_data)
         else:
-            week_subfolder = week_folder / pub_date.strftime("%Y-%m-%d")
-            week_subfolder.mkdir(parents=True, exist_ok=True)
-            create_epub(title, body_html, author, url,
-                        week_subfolder, image_data)
+            week_articles.append(article_data)
 
     except Exception as e:
         print(f"❌ Failed to save article: {url} - {e}")
 
 
-def archive_old_articles(today_folder, week_folder):
-    today = datetime.today()
-
-    for epub_file in today_folder.glob("*.epub"):
-        modified_time = datetime.fromtimestamp(epub_file.stat().st_mtime)
-        if modified_time.date() < today.date():
-            date_folder = week_folder / modified_time.strftime("%Y-%m-%d")
-            date_folder.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(epub_file), date_folder / epub_file.name)
-            print(f"📦 Moved old article to weekly archive: {epub_file.name}")
-
-    for folder in week_folder.glob("*"):
-        if folder.is_dir():
-            try:
-                folder_date = datetime.strptime(folder.name, "%Y-%m-%d")
-                if today - folder_date > timedelta(days=7):
-                    shutil.rmtree(folder)
-                    print(f"🧹 Deleted old folder: {folder}")
-            except ValueError:
-                continue
-
-
 async def main():
-    today_folder = ROOT_DIR / "Today's Articles"
-    week_folder = ROOT_DIR / "This Week"
-
-    today_folder.mkdir(parents=True, exist_ok=True)
-    week_folder.mkdir(parents=True, exist_ok=True)
-
-    archive_old_articles(today_folder, week_folder)
-
     async with async_playwright() as playwright:
         links = await extract_article_links(playwright, SECTIONS["Today's Articles"])
         for link in links:
-            await download_article(playwright, link, today_folder, week_folder)
+            await download_article(playwright, link)
 
+    create_combined_epub(today_articles, week_articles, ROOT_DIR)
 
 if __name__ == "__main__":
     asyncio.run(main())
