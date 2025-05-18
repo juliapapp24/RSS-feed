@@ -2,6 +2,7 @@ import asyncio
 import re
 import shutil
 import requests
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -14,12 +15,28 @@ SECTIONS = {
         "https://www.newyorker.com/latest",
     ]
 }
-ROOT_DIR = Path("the-new-yorker")
+ROOT_DIR = Path("/Users/juliapappp/Calibre Library/the-new-yorker")
+CALIBRE_LIBRARY_PATH = Path("/Users/juliapappp/Calibre Library")
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 
 def sanitize_filename(name):
     return re.sub(r'[^\w\-_\. ]', '_', name)
+
+
+def import_to_calibre(epub_path):
+    calibre_db = "/Applications/calibre.app/Contents/MacOS/calibredb"
+    try:
+        subprocess.run([
+            calibre_db,
+            "add",
+            str(epub_path),
+            "--with-library",
+            str(CALIBRE_LIBRARY_PATH)
+        ], check=True)
+        print(f"📚 Added to Calibre: {epub_path.name}")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Failed to import {epub_path.name} into Calibre: {e}")
 
 
 def create_epub(title, content, author, url, save_path, image_data=None):
@@ -54,8 +71,10 @@ def create_epub(title, content, author, url, save_path, image_data=None):
     book.add_item(epub.EpubNcx())
 
     filename = sanitize_filename(title) + ".epub"
-    epub.write_epub(str(save_path / filename), book)
+    full_path = save_path / filename
+    epub.write_epub(str(full_path), book)
     print(f"✅ Saved: {filename}")
+    import_to_calibre(full_path)
 
 
 def extract_clean_authors(author_tag):
