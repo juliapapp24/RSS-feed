@@ -40,7 +40,8 @@ def import_to_calibre(epub_path):
             "add",
             str(epub_path),
             "--with-library",
-            str(CALIBRE_LIBRARY_PATH)
+            str(CALIBRE_LIBRARY_PATH),
+            "--automerge", "overwrite"
         ], check=True)
         print(f"📚 Added to Calibre: {epub_path.name}")
     except subprocess.CalledProcessError as e:
